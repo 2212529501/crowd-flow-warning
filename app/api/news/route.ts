@@ -1,0 +1,339 @@
+import { NextResponse } from "next/server";
+
+export const runtime = "nodejs";
+
+type TimeRange = "week" | "month";
+type ImpactLevel = "高" | "中" | "低";
+
+type NewsRequest = {
+  location?: unknown;
+  timeRange?: unknown;
+};
+
+type NewsItem = {
+  title: string;
+  date: string;
+  impactLevel: ImpactLevel;
+  summary: string;
+  reason: string;
+  source?: string;
+  url?: string;
+};
+
+type ApiResponse = {
+  items?: NewsItem[];
+  error?: string;
+};
+
+const SYSTEM_PROMPT = `你是一名城市运行数据分析师，擅长从新闻、活动、政策和公共事件中判断其对区域人群流动的影响。
+
+你的任务：
+1. 只保留可能引起明显人员流动的新闻或事件。
+2. 过滤掉与人群流动无关的普通新闻、企业宣传、泛娱乐资讯和低相关内容。
+3. 重点关注以下事件类型：
+   - 大型演唱会、音乐节、体育赛事
+   - 会展、论坛、会议、招聘会
+   - 景区活动、旅游政策、节假日客流
+   - 交通管制、重大施工、枢纽客流变化
+   - 学校开学、考试、公共安全事件
+4. 对每条事件评估人群流动影响等级：
+   - 高：可能造成跨城/跨区显著客流增长、交通拥堵或住宿需求上涨
+   - 中：可能造成局部区域客流增加
+   - 低：影响范围有限，仅需关注
+5. 输出必须是 JSON，不要输出 Markdown，不要输出解释性文字。`;
+
+const ALLOWED_TIME_RANGES = new Set<TimeRange>(["week", "month"]);
+const ALLOWED_IMPACT_LEVELS = new Set<ImpactLevel>(["高", "中", "低"]);
+const REQUEST_TIMEOUT_MS = 45000;
+
+function jsonResponse(body: ApiResponse, status: number) {
+  return NextResponse.json(body, { status });
+}
+
+function isTimeRange(value: unknown): value is TimeRange {
+  return typeof value === "string" && ALLOWED_TIME_RANGES.has(value as TimeRange);
+}
+
+function getTimeRangeLabel(timeRange: TimeRange) {
+  return timeRange === "week" ? "未来一周" : "未来一个月";
+}
+
+function getTodayInChina() {
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  })
+    .format(new Date())
+    .replaceAll("/", "-");
+}
+
+function buildSearchQueries(location: string, timeRangeLabel: string) {
+  const keywords = [
+    "演唱会",
+    "赛事",
+    "会议",
+    "展会",
+    "旅游政策",
+    "景区客流",
+    "交通管制",
+    "节假日活动",
+    "人群流动 新闻"
+  ];
+
+  return keywords.map((keyword) => `${location} ${timeRangeLabel} ${keyword}`);
+}
+
+function buildUserPrompt(location: string, timeRange: TimeRange) {
+  const timeRangeLabel = getTimeRangeLabel(timeRange);
+  const searchQueries = buildSearchQueries(location, timeRangeLabel)
+    .map((query) => `- ${query}`)
+    .join("\n");
+
+  return `地区：${location}
+时间范围：${timeRangeLabel}
+当前日期：${getTodayInChina()}
+
+搜索意图：
+${searchQueries}
+
+请根据候选新闻或事件，筛选出可能影响人群流动的内容，并返回结构化 JSON。
+
+返回格式：
+{
+  "items": [
+    {
+      "title": "string",
+      "date": "YYYY-MM-DD 或可读日期",
+      "impactLevel": "高 | 中 | 低",
+      "summary": "不超过 80 字的摘要",
+      "reason": "不超过 80 字，说明为什么会影响人群流动",
+      "source": "string，可选",
+      "url": "string，可选"
+    }
+  ]
+}`;
+}
+
+function createQwenPayload(location: string, timeRange: TimeRange) {
+  return {
+    model: process.env.NEWS_SEARCH_MODEL ?? "qwen-plus",
+    messages: [
+      {
+        role: "system",
+        content: SYSTEM_PROMPT
+      },
+      {
+        role: "user",
+        content: buildUserPrompt(location, timeRange)
+      }
+    ],
+    enable_search: true,
+    response_format: {
+      type: "json_object"
+    },
+    temperature: 0.2,
+    stream: false
+  };
+}
+
+function extractModelContent(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const response = payload as {
+    choices?: Array<{ message?: { content?: unknown } }>;
+    output?: {
+      text?: unknown;
+      choices?: Array<{ message?: { content?: unknown } }>;
+    };
+  };
+
+  const openAiCompatibleContent = response.choices?.[0]?.message?.content;
+  if (typeof openAiCompatibleContent === "string") {
+    return openAiCompatibleContent;
+  }
+
+  const dashScopeContent = response.output?.choices?.[0]?.message?.content;
+  if (typeof dashScopeContent === "string") {
+    return dashScopeContent;
+  }
+
+  if (typeof response.output?.text === "string") {
+    return response.output.text;
+  }
+
+  return null;
+}
+
+function parseAiJson(content: string) {
+  const trimmed = content.trim();
+  const withoutFence = trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(withoutFence) as unknown;
+  } catch {
+    const objectMatch = withoutFence.match(/\{[\s\S]*\}/);
+    if (!objectMatch) {
+      throw new Error("AI_JSON_PARSE_FAILED");
+    }
+
+    return JSON.parse(objectMatch[0]) as unknown;
+  }
+}
+
+function toOptionalString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeItems(value: unknown): NewsItem[] | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const parsed = value as { items?: unknown };
+  if (!Array.isArray(parsed.items)) {
+    return null;
+  }
+
+  return parsed.items
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    .map((item) => {
+      const impactLevel = ALLOWED_IMPACT_LEVELS.has(item.impactLevel as ImpactLevel)
+        ? (item.impactLevel as ImpactLevel)
+        : "低";
+
+      return {
+        title: String(item.title ?? "未命名事件"),
+        date: String(item.date ?? "日期待确认"),
+        impactLevel,
+        summary: String(item.summary ?? "").slice(0, 120),
+        reason: String(item.reason ?? "").slice(0, 120),
+        source: toOptionalString(item.source),
+        url: toOptionalString(item.url)
+      };
+    });
+}
+
+async function callQwen(location: string, timeRange: TimeRange) {
+  const apiKey = process.env.NEWS_SEARCH_API_KEY;
+  const endpoint = process.env.NEWS_SEARCH_ENDPOINT;
+
+  if (!apiKey || !endpoint) {
+    return {
+      status: 500,
+      body: { error: "AI 服务配置缺失" }
+    } as const;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(createQwenPayload(location, timeRange)),
+      signal: controller.signal
+    });
+
+    if (response.status === 429) {
+      return {
+        status: 429,
+        body: { error: "AI 服务暂时繁忙，请稍后重试" }
+      } as const;
+    }
+
+    const responseText = await response.text();
+
+    if (!response.ok) {
+      return {
+        status: 500,
+        body: { error: "服务暂时不可用" }
+      } as const;
+    }
+
+    let upstreamPayload: unknown;
+    try {
+      upstreamPayload = JSON.parse(responseText) as unknown;
+    } catch {
+      return {
+        status: 502,
+        body: { error: "AI 返回格式异常" }
+      } as const;
+    }
+
+    const content = extractModelContent(upstreamPayload);
+    if (!content) {
+      return {
+        status: 502,
+        body: { error: "AI 返回格式异常" }
+      } as const;
+    }
+
+    let aiJson: unknown;
+    try {
+      aiJson = parseAiJson(content);
+    } catch {
+      return {
+        status: 502,
+        body: { error: "AI 返回格式异常" }
+      } as const;
+    }
+
+    const items = normalizeItems(aiJson);
+    if (!items) {
+      return {
+        status: 502,
+        body: { error: "AI 返回格式异常" }
+      } as const;
+    }
+
+    return {
+      status: 200,
+      body: { items }
+    } as const;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return {
+        status: 504,
+        body: { error: "分析超时，请缩小范围或稍后再试" }
+      } as const;
+    }
+
+    return {
+      status: 500,
+      body: { error: "服务暂时不可用" }
+    } as const;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+export async function POST(request: Request) {
+  let payload: NewsRequest;
+
+  try {
+    payload = (await request.json()) as NewsRequest;
+  } catch {
+    return jsonResponse({ error: "请求参数有误，请重新选择条件" }, 400);
+  }
+
+  const location =
+    typeof payload.location === "string" ? payload.location.trim() : "";
+
+  if (!location || !isTimeRange(payload.timeRange)) {
+    return jsonResponse({ error: "请求参数有误，请重新选择条件" }, 400);
+  }
+
+  const result = await callQwen(location, payload.timeRange);
+  return jsonResponse(result.body, result.status);
+}
