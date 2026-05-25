@@ -197,6 +197,44 @@ function toOptionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function extractLatestDateString(dateStr: string): string | null {
+  const candidates: string[] = [];
+
+  const fullDateRegex = /(\d{4})[-\/年.](\d{1,2})[-\/月.](\d{1,2})/g;
+  const fullMatches = Array.from(dateStr.matchAll(fullDateRegex));
+  for (const match of fullMatches) {
+    const year = match[1];
+    const month = match[2].padStart(2, "0");
+    const day = match[3].padStart(2, "0");
+    candidates.push(`${year}-${month}-${day}`);
+  }
+
+  if (candidates.length === 0) {
+    const currentYear = getTodayInChina().slice(0, 4);
+    const noYearRegex = /(?<!\d)(\d{1,2})[-\/月.](\d{1,2})/g;
+    const noYearMatches = Array.from(dateStr.matchAll(noYearRegex));
+    for (const match of noYearMatches) {
+      const month = match[1].padStart(2, "0");
+      const day = match[2].padStart(2, "0");
+      candidates.push(`${currentYear}-${month}-${day}`);
+    }
+  }
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  return candidates.sort().pop()!;
+}
+
+function isPastEvent(dateStr: string, todayChina: string): boolean {
+  const latest = extractLatestDateString(dateStr);
+  if (!latest) {
+    return false;
+  }
+  return latest < todayChina;
+}
+
 function normalizeItems(value: unknown): NewsItem[] | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -206,6 +244,8 @@ function normalizeItems(value: unknown): NewsItem[] | null {
   if (!Array.isArray(parsed.items)) {
     return null;
   }
+
+  const todayChina = getTodayInChina();
 
   return parsed.items
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
@@ -223,7 +263,8 @@ function normalizeItems(value: unknown): NewsItem[] | null {
         source: toOptionalString(item.source),
         url: toOptionalString(item.url)
       };
-    });
+    })
+    .filter((item) => !isPastEvent(item.date, todayChina));
 }
 
 async function callQwen(location: string, timeRange: TimeRange) {
