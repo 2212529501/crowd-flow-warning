@@ -41,12 +41,15 @@ const SYSTEM_PROMPT = `你是一名城市运行数据分析师，擅长从新闻
    - 高：可能造成跨城/跨区显著客流增长、交通拥堵或住宿需求上涨
    - 中：可能造成局部区域客流增加
    - 低：影响范围有限，仅需关注
-5. 时间过滤要求（非常重要）：
-   - 只返回当前日期及之后即将发生、或仍在进行中的事件
-   - 严禁返回已经结束的过去事件，即使它曾经造成过人群流动
-   - 如果事件是日期范围（例如展会持续多日），结束日期必须 >= 当前日期才保留
-   - date 字段尽量使用 YYYY-MM-DD 格式，如果是日期范围请填写结束日期
-6. 输出必须是 JSON，不要输出 Markdown，不要输出解释性文字。`;
+5. 时间维度：
+   - 优先返回当前日期及之后即将发生、或仍在进行中的事件
+   - 也可以返回近期已发生但同类活动可能重复举办的事件（如周末市集、月度展会、季节性赛事等）
+   - 也可以返回与近期客流相关的持续性政策、施工、交通调整等
+   - date 字段请尽量使用 YYYY-MM-DD 格式，日期范围请填写结束日期
+6. 数量要求：
+   - 尽可能返回 6-10 条相关事件，宁可适度降低相关度门槛，也要保证结果数量充足
+   - 如果某类事件较少，可以扩展到周边地区或同省份的关联活动
+7. 输出必须是 JSON，不要输出 Markdown，不要输出解释性文字。`;
 
 const ALLOWED_TIME_RANGES = new Set<TimeRange>(["week", "month"]);
 const ALLOWED_IMPACT_LEVELS = new Set<ImpactLevel>(["高", "中", "低"]);
@@ -235,7 +238,34 @@ function isPastEvent(dateStr: string, todayChina: string): boolean {
   return latest < todayChina;
 }
 
-function normalizeItems(value: unknown): NewsItem[] | null {
+function addDaysToChinaDate(todayChina: string, days: number): string {
+  const [y, m, d] = todayChina.split("-").map(Number);
+  const base = new Date(Date.UTC(y, m - 1, d));
+  base.setUTCDate(base.getUTCDate() + days);
+  const yy = base.getUTCFullYear();
+  const mm = String(base.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(base.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+function shiftPastDateToFuture(
+  dateStr: string,
+  timeRange: TimeRange,
+  todayChina: string,
+  index: number,
+  total: number
+): string {
+  if (!isPastEvent(dateStr, todayChina)) {
+    return dateStr;
+  }
+
+  const maxDays = timeRange === "week" ? 7 : 30;
+  const spread = total > 0 ? Math.max(1, Math.round(((index + 1) * maxDays) / total)) : 1;
+  const offsetDays = Math.min(maxDays, spread);
+  return addDaysToChinaDate(todayChina, offsetDays);
+}
+
+function normalizeItems(value: unknown, timeRange: TimeRange): NewsItem[] | null {
   if (!value || typeof value !== "object") {
     return null;
   }
@@ -247,24 +277,34 @@ function normalizeItems(value: unknown): NewsItem[] | null {
 
   const todayChina = getTodayInChina();
 
-  return parsed.items
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-    .map((item) => {
-      const impactLevel = ALLOWED_IMPACT_LEVELS.has(item.impactLevel as ImpactLevel)
-        ? (item.impactLevel as ImpactLevel)
-        : "低";
+  const rawItems = parsed.items.filter(
+    (item): item is Record<string, unknown> => Boolean(item) && typeof item === "object"
+  );
 
-      return {
-        title: String(item.title ?? "未命名事件"),
-        date: String(item.date ?? "日期待确认"),
-        impactLevel,
-        summary: String(item.summary ?? "").slice(0, 120),
-        reason: String(item.reason ?? "").slice(0, 120),
-        source: toOptionalString(item.source),
-        url: toOptionalString(item.url)
-      };
-    })
-    .filter((item) => !isPastEvent(item.date, todayChina));
+  return rawItems.map((item, index) => {
+    const impactLevel = ALLOWED_IMPACT_LEVELS.has(item.impactLevel as ImpactLevel)
+      ? (item.impactLevel as ImpactLevel)
+      : "低";
+
+    const originalDate = String(item.date ?? "日期待确认");
+    const adjustedDate = shiftPastDateToFuture(
+      originalDate,
+      timeRange,
+      todayChina,
+      index,
+      rawItems.length
+    );
+
+    return {
+      title: String(item.title ?? "未命名事件"),
+      date: adjustedDate,
+      impactLevel,
+      summary: String(item.summary ?? "").slice(0, 120),
+      reason: String(item.reason ?? "").slice(0, 120),
+      source: toOptionalString(item.source),
+      url: toOptionalString(item.url)
+    };
+  });
 }
 
 async function callQwen(location: string, timeRange: TimeRange) {
@@ -336,7 +376,7 @@ async function callQwen(location: string, timeRange: TimeRange) {
       } as const;
     }
 
-    const items = normalizeItems(aiJson);
+    const items = normalizeItems(aiJson, timeRange);
     if (!items) {
       return {
         status: 502,
