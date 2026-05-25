@@ -41,7 +41,12 @@ const SYSTEM_PROMPT = `你是一名城市运行数据分析师，擅长从新闻
    - 高：可能造成跨城/跨区显著客流增长、交通拥堵或住宿需求上涨
    - 中：可能造成局部区域客流增加
    - 低：影响范围有限，仅需关注
-5. 输出必须是 JSON，不要输出 Markdown，不要输出解释性文字。`;
+5. 时间过滤要求（非常重要）：
+   - 只返回当前日期及之后即将发生、或仍在进行中的事件
+   - 严禁返回已经结束的过去事件，即使它曾经造成过人群流动
+   - 如果事件是日期范围（例如展会持续多日），结束日期必须 >= 当前日期才保留
+   - date 字段尽量使用 YYYY-MM-DD 格式，如果是日期范围请填写结束日期
+6. 输出必须是 JSON，不要输出 Markdown，不要输出解释性文字。`;
 
 const ALLOWED_TIME_RANGES = new Set<TimeRange>(["week", "month"]);
 const ALLOWED_IMPACT_LEVELS = new Set<ImpactLevel>(["高", "中", "低"]);
