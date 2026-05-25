@@ -80,24 +80,16 @@ function getTodayInChina() {
 
 function buildSearchQueries(location: string, timeRangeLabel: string) {
   const keywords = [
-    "演唱会 音乐节",
+    "演唱会 音乐节 演出",
     "体育赛事 马拉松",
-    "会议 论坛 峰会",
-    "展会 博览会 招聘会",
-    "旅游政策 节假日",
-    "景区客流 热门景点",
-    "交通管制 道路施工",
-    "地铁开通 公共交通调整",
+    "会议 论坛 展会 招聘会",
+    "旅游政策 景区客流 节假日",
+    "交通管制 道路施工 地铁调整",
     "学校开学 大型考试",
-    "电影节 文化活动",
+    "市集 庙会 灯会 文化活动",
     "商圈促销 新店开业",
-    "演出 话剧 livehouse",
-    "市集 庙会 灯会",
-    "重大政策 城市规划",
-    "天气预警 突发事件",
-    "网红打卡 热门活动",
-    "公共安全 大型集会",
-    "人群流动 新闻"
+    "重大政策 城市规划 公共安全",
+    "人群流动 客流预警"
   ];
 
   return keywords.map((keyword) => `${location} ${timeRangeLabel} ${keyword}`);
@@ -314,6 +306,11 @@ async function callQwen(location: string, timeRange: TimeRange) {
     const responseText = await response.text();
 
     if (!response.ok) {
+      console.error(
+        "[news-api] DashScope error",
+        response.status,
+        responseText.slice(0, 500)
+      );
       return {
         status: 500,
         body: { error: "服务暂时不可用" }
@@ -368,6 +365,7 @@ async function callQwen(location: string, timeRange: TimeRange) {
       } as const;
     }
 
+    console.error("[news-api] unexpected fetch error", error);
     return {
       status: 500,
       body: { error: "服务暂时不可用" }
