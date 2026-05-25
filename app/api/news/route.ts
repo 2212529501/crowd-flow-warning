@@ -47,7 +47,7 @@ const SYSTEM_PROMPT = `你是一名城市运行数据分析师，擅长从新闻
    - 也可以返回与近期客流相关的持续性政策、施工、交通调整等
    - date 字段请尽量使用 YYYY-MM-DD 格式，日期范围请填写结束日期
 6. 数量要求：
-   - 尽可能返回 6-10 条相关事件，宁可适度降低相关度门槛，也要保证结果数量充足
+   - 尽可能返回 10-15 条相关事件，宁可适度降低相关度门槛，也要保证结果数量充足
    - 如果某类事件较少，可以扩展到周边地区或同省份的关联活动
 7. 输出必须是 JSON，不要输出 Markdown，不要输出解释性文字。`;
 
@@ -80,14 +80,23 @@ function getTodayInChina() {
 
 function buildSearchQueries(location: string, timeRangeLabel: string) {
   const keywords = [
-    "演唱会",
-    "赛事",
-    "会议",
-    "展会",
-    "旅游政策",
-    "景区客流",
-    "交通管制",
-    "节假日活动",
+    "演唱会 音乐节",
+    "体育赛事 马拉松",
+    "会议 论坛 峰会",
+    "展会 博览会 招聘会",
+    "旅游政策 节假日",
+    "景区客流 热门景点",
+    "交通管制 道路施工",
+    "地铁开通 公共交通调整",
+    "学校开学 大型考试",
+    "电影节 文化活动",
+    "商圈促销 新店开业",
+    "演出 话剧 livehouse",
+    "市集 庙会 灯会",
+    "重大政策 城市规划",
+    "天气预警 突发事件",
+    "网红打卡 热门活动",
+    "公共安全 大型集会",
     "人群流动 新闻"
   ];
 
@@ -238,34 +247,7 @@ function isPastEvent(dateStr: string, todayChina: string): boolean {
   return latest < todayChina;
 }
 
-function addDaysToChinaDate(todayChina: string, days: number): string {
-  const [y, m, d] = todayChina.split("-").map(Number);
-  const base = new Date(Date.UTC(y, m - 1, d));
-  base.setUTCDate(base.getUTCDate() + days);
-  const yy = base.getUTCFullYear();
-  const mm = String(base.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(base.getUTCDate()).padStart(2, "0");
-  return `${yy}-${mm}-${dd}`;
-}
-
-function shiftPastDateToFuture(
-  dateStr: string,
-  timeRange: TimeRange,
-  todayChina: string,
-  index: number,
-  total: number
-): string {
-  if (!isPastEvent(dateStr, todayChina)) {
-    return dateStr;
-  }
-
-  const maxDays = timeRange === "week" ? 7 : 30;
-  const spread = total > 0 ? Math.max(1, Math.round(((index + 1) * maxDays) / total)) : 1;
-  const offsetDays = Math.min(maxDays, spread);
-  return addDaysToChinaDate(todayChina, offsetDays);
-}
-
-function normalizeItems(value: unknown, timeRange: TimeRange): NewsItem[] | null {
+function normalizeItems(value: unknown): NewsItem[] | null {
   if (!value || typeof value !== "object") {
     return null;
   }
@@ -277,34 +259,24 @@ function normalizeItems(value: unknown, timeRange: TimeRange): NewsItem[] | null
 
   const todayChina = getTodayInChina();
 
-  const rawItems = parsed.items.filter(
-    (item): item is Record<string, unknown> => Boolean(item) && typeof item === "object"
-  );
+  return parsed.items
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    .map((item) => {
+      const impactLevel = ALLOWED_IMPACT_LEVELS.has(item.impactLevel as ImpactLevel)
+        ? (item.impactLevel as ImpactLevel)
+        : "低";
 
-  return rawItems.map((item, index) => {
-    const impactLevel = ALLOWED_IMPACT_LEVELS.has(item.impactLevel as ImpactLevel)
-      ? (item.impactLevel as ImpactLevel)
-      : "低";
-
-    const originalDate = String(item.date ?? "日期待确认");
-    const adjustedDate = shiftPastDateToFuture(
-      originalDate,
-      timeRange,
-      todayChina,
-      index,
-      rawItems.length
-    );
-
-    return {
-      title: String(item.title ?? "未命名事件"),
-      date: adjustedDate,
-      impactLevel,
-      summary: String(item.summary ?? "").slice(0, 120),
-      reason: String(item.reason ?? "").slice(0, 120),
-      source: toOptionalString(item.source),
-      url: toOptionalString(item.url)
-    };
-  });
+      return {
+        title: String(item.title ?? "未命名事件"),
+        date: String(item.date ?? "日期待确认"),
+        impactLevel,
+        summary: String(item.summary ?? "").slice(0, 120),
+        reason: String(item.reason ?? "").slice(0, 120),
+        source: toOptionalString(item.source),
+        url: toOptionalString(item.url)
+      };
+    })
+    .filter((item) => !isPastEvent(item.date, todayChina));
 }
 
 async function callQwen(location: string, timeRange: TimeRange) {
@@ -376,7 +348,7 @@ async function callQwen(location: string, timeRange: TimeRange) {
       } as const;
     }
 
-    const items = normalizeItems(aiJson, timeRange);
+    const items = normalizeItems(aiJson);
     if (!items) {
       return {
         status: 502,
