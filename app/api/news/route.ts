@@ -53,7 +53,7 @@ const SYSTEM_PROMPT = `你是一名城市运行数据分析师，擅长从新闻
 
 const ALLOWED_TIME_RANGES = new Set<TimeRange>(["week", "month"]);
 const ALLOWED_IMPACT_LEVELS = new Set<ImpactLevel>(["高", "中", "低"]);
-const REQUEST_TIMEOUT_MS = 45000;
+const REQUEST_TIMEOUT_MS = 55000;
 
 function jsonResponse(body: ApiResponse, status: number) {
   return NextResponse.json(body, { status });

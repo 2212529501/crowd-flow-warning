@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type TimeRange = "week" | "month";
 type ImpactLevel = "高" | "中" | "低";
@@ -27,6 +27,15 @@ const TIME_RANGE_OPTIONS: Array<{ label: string; value: TimeRange }> = [
   { label: "未来一个月", value: "month" }
 ];
 
+const LOADING_STAGES = [
+  "正在联网检索区域相关新闻...",
+  "筛选与人群流动相关的事件...",
+  "评估各事件的影响范围与等级...",
+  "整理分析结果，即将完成..."
+];
+
+const ESTIMATED_TOTAL_SECONDS = 55;
+
 const errorMessages: Record<number, string> = {
   400: "请求参数有误，请重新选择条件",
   429: "AI 服务暂时繁忙，请稍后重试",
@@ -52,6 +61,34 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [error, setError] = useState("");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setElapsedSeconds(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const intervalId = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 200);
+
+    return () => window.clearInterval(intervalId);
+  }, [isLoading]);
+
+  const loadingStage = useMemo(() => {
+    const stageIndex = Math.min(
+      Math.floor(elapsedSeconds / 6),
+      LOADING_STAGES.length - 1
+    );
+    return LOADING_STAGES[stageIndex];
+  }, [elapsedSeconds]);
+
+  const loadingProgress = useMemo(
+    () => Math.min(100, Math.round((elapsedSeconds / ESTIMATED_TOTAL_SECONDS) * 100)),
+    [elapsedSeconds]
+  );
 
   const currentRangeLabel = useMemo(
     () =>
@@ -67,7 +104,7 @@ export default function HomePage() {
     setHasSearched(true);
 
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 35000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 58000);
 
     try {
       const response = await fetch("/api/news", {
@@ -167,8 +204,27 @@ export default function HomePage() {
           ) : null}
 
           {isLoading ? (
-            <div className="rounded-lg border border-slate-200 bg-white px-5 py-10 text-center text-slate-700 shadow-sm">
-              正在分析区域事件...
+            <div className="rounded-lg border border-slate-200 bg-white px-5 py-8 shadow-sm">
+              <div className="flex flex-col items-center gap-4">
+                <div className="flex items-center gap-3 text-slate-700">
+                  <span
+                    aria-hidden
+                    className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-teal-600"
+                  />
+                  <span className="text-sm font-medium">{loadingStage}</span>
+                </div>
+
+                <div className="h-1.5 w-full max-w-md overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full rounded-full bg-teal-600 transition-[width] duration-200 ease-linear"
+                    style={{ width: `${loadingProgress}%` }}
+                  />
+                </div>
+
+                <p className="text-xs text-slate-500">
+                  已用时 {elapsedSeconds} 秒 · 通常需要 20-50 秒，请耐心等待
+                </p>
+              </div>
             </div>
           ) : null}
 
