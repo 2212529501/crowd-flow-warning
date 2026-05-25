@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 type TimeRange = "week" | "month";
 type ImpactLevel = "高" | "中" | "低";
