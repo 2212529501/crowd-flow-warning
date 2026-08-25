@@ -23,3 +23,6 @@ pnpm-debug.log*
 
 # typescript
 *.tsbuildinfo
+
+# local saved search result
+/data/saved-news.json

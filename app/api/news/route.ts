@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isAdminRequest } from "../../lib/admin-auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -376,6 +377,10 @@ async function callQwen(location: string, timeRange: TimeRange) {
 }
 
 export async function POST(request: Request) {
+  if (!isAdminRequest(request)) {
+    return jsonResponse({ error: "请先输入管理密码" }, 401);
+  }
+
   let payload: NewsRequest;
 
   try {
