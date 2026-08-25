@@ -119,7 +119,7 @@ const categoryConfig: Array<{
 ];
 
 function getErrorMessage(status: number, fallback?: string) {
-  return errorMessages[status] ?? fallback ?? "服务暂时不可用";
+  return fallback ?? errorMessages[status] ?? "服务暂时不可用";
 }
 
 function classifyEvent(item: NewsItem): EventCategory {
@@ -378,22 +378,50 @@ export default function HomePage() {
     const timeoutId = window.setTimeout(() => controller.abort(), 58000);
 
     try {
-      const clearResponse = await fetch("/api/saved-news", { method: "DELETE" });
+      let clearResponse: Response;
+
+      try {
+        clearResponse = await fetch("/api/saved-news", { method: "DELETE" });
+      } catch {
+        setItems([]);
+        setError("无法连接保存结果接口，请检查 /api/saved-news 是否部署成功");
+        return;
+      }
+
       if (!clearResponse.ok) {
+        const clearData = (await clearResponse
+          .json()
+          .catch(() => ({}))) as ApiResponse;
         if (clearResponse.status === 401) {
           setIsAdminAuthenticated(false);
         }
         setItems([]);
-        setError("旧保存结果清除失败，本次更新未开始");
+        setError(clearData.error ?? "旧保存结果清除失败，本次更新未开始");
         return;
       }
 
-      const response = await fetch("/api/news", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ location, timeRange }),
-        signal: controller.signal
-      });
+      let response: Response;
+
+      try {
+        response = await fetch("/api/news", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ location, timeRange }),
+          signal: controller.signal
+        });
+      } catch (requestError) {
+        setItems([]);
+        if (
+          requestError instanceof DOMException &&
+          requestError.name === "AbortError"
+        ) {
+          setError("分析超时，请缩小范围或稍后再试");
+        } else {
+          setError("无法连接搜索接口，请检查 /api/news 是否部署成功");
+        }
+        return;
+      }
+
       const data = (await response.json().catch(() => ({}))) as ApiResponse;
 
       if (!response.ok) {
